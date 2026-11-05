@@ -1,0 +1,5 @@
+name = "simple_nat"
+defaultTargets = ["SimpleNat"]
+
+[[lean_lib]]
+name = "SimpleNat"
