@@ -1,5 +1,8 @@
 namespace SimpleNat
 
+axiom MyAxiom.{u} : ∀ a: Sort u, ∀ x y : a, x = y → y = x
+theorem my_theorem : ∀ a b : Unit, a = b → b = a := MyAxiom Unit
+
 inductive MyNat where
   | zero : MyNat
   | succ : MyNat → MyNat
