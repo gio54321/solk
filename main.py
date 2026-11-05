@@ -1,8 +1,11 @@
 from yalk import parser
+from yalk.tc import Environment
 
 def main() -> None:
-    exported = parser.parse_exported_definitions("examples/simple_nat.ndjson")
+    exported = parser.parse_exported_definitions("examples/simple_nat/axiom.ndjson")
     exported.pretty_print()
+    env = Environment()
+    env.add_all(exported)
 
 
 if __name__ == "__main__":
