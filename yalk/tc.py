@@ -111,6 +111,12 @@ class TypeChecker:
                 return self.infer_sort(term)
             case App():
                 return self.infer_app(term)
+            case Lambda():
+                return self.infer_lambda(term)
+            case Forall():
+                return self.infer_pi(term)
+            case Let():
+                return self.infer_let(term)
         return Sort(Zero())
 
     def infer_sort(self, sort: Sort) -> Expr:
@@ -179,6 +185,22 @@ class TypeChecker:
 
         # the type of a pi is the sort IMax(binder sort level, body sort level)
         return Sort(IMax(binder_type_type.level, body_type.level))
+
+    def infer_let(self, let: Let) -> Expr:
+        # the type of the binder type must be a sort
+        binder_type_type = whnf(self.infer_term(let.binder_type))
+        if not isinstance(binder_type_type, Sort):
+            raise KernelError(f"expected a sort, got {binder_type_type}")
+
+        # the type of the value must be equal to the binder type
+        value_type = self.infer_term(let.value)
+        if not def_eq(let.binder_type, value_type):
+            raise KernelError(f"binder type {let.binder_type} does not match value type {value_type}")
+
+        # the type of a let x: A = val in body is
+        # the type of the body with x replaced by val
+        body = instantiate(let.body, let.value)
+        return self.infer_term(body)
 
 def def_eq(expr1: Expr, expr2: Expr) -> bool:
     # TODO: I wish it was this easy...
