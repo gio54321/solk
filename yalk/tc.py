@@ -115,18 +115,23 @@ class TypeChecker:
         return Sort(Succ(sort.level))
 
     def infer_app(self, app: App) -> Expr:
+        # get the type of the function, it must be pi
         fun_type = whnf(self.infer_term(app.fn))
         if not isinstance(fun_type, Forall):
             raise KernelError(f"expected a forall type, got {fun_type}")
 
+        # get the type of the argument
         arg_type = self.infer_term(app.arg)
 
         # get the concrete type of the binder, which could be dependent on the argument value
         concrete_binder_type = instantiate(fun_type.binder_type, app.arg)
 
+        # the binder type must match the argument type
         if not def_eq(concrete_binder_type, arg_type):
             raise KernelError(f"expected {concrete_binder_type}, got {arg_type}")
 
+        # the type of the application is the return value of the pi,
+        # instantiated with the argument value
         return instantiate(fun_type.body, app.arg)
 
 
