@@ -88,15 +88,22 @@ class TypeChecker:
         self, env: Environment, declaring_info: DeclarationInfo | None = None
     ) -> None:
         self.env = env
-        self.locals: list[Expr] = []
         self.declaring_info: DeclarationInfo | None = None
+        self.free_variables: dict[FVar, Expr] = {}
+
+    def new_free_variable(self, fvar_type: Expr) -> FVar:
+        fvar = FVar(name=f"fvar_{len(self.free_variables)}")
+        self.free_variables[fvar] = fvar_type
+        return fvar
 
     def infer_term(self, term: Expr) -> Expr:
         match term:
             case BVar(_index):
-                pass  # TODO
+                raise KernelError(f"bound variable not allowed in inference: {_index}")
             case FVar(name):
-                raise KernelError(f"free variable not allowed in inference: {name}")
+                if name not in self.free_variables:
+                    raise KernelError(f"free variable not found: {name}")
+                return self.free_variables[name]
             case Sort():
                 return self.infer_sort(term)
             case App():
@@ -123,16 +130,33 @@ class TypeChecker:
         # get the type of the argument
         arg_type = self.infer_term(app.arg)
 
-        # get the concrete type of the binder, which could be dependent on the argument value
-        concrete_binder_type = instantiate(fun_type.binder_type, app.arg)
-
         # the binder type must match the argument type
-        if not def_eq(concrete_binder_type, arg_type):
-            raise KernelError(f"expected {concrete_binder_type}, got {arg_type}")
+        if not def_eq(fun_type.binder_type, arg_type):
+            raise KernelError(f"expected {fun_type.binder_type}, got {arg_type}")
 
         # the type of the application is the return value of the pi,
         # instantiated with the argument value
         return instantiate(fun_type.body, app.arg)
+
+    def infer_lambda(self, lam: Lambda) -> Expr:
+        # the type of the binder type must be a sort
+        binder_type_type = whnf(self.infer_term(lam.binder_type))
+        if not isinstance(binder_type_type, Sort):
+            raise KernelError(f"expected a sort, got {binder_type_type}")
+
+        # replce the binder with a fresh free variable and infer the body type
+        fvar = self.new_free_variable(lam.binder_type)
+        body = instantiate(lam.body, fvar)
+        body_type = self.infer_term(body)
+
+        # at this point, the body type is inferred, but it could contain occurrences of the
+        # newly created free variable, because the body type could be dependent on the binder value.
+        # to construct a pi, we need to bind those occurrences, so we conert them back to the corresponding
+        # bound variables, referencing the binder immediately above
+        body_type_abstracted = abstract(body_type, fvar)
+
+        # the type of the lambda is a pi, with the binder type as the domain and the body as the codomain
+        return Forall(lam.var, lam.binder_type, lam.binder_info, body_type_abstracted)
 
 
 def def_eq(expr1: Expr, expr2: Expr) -> bool:
@@ -144,11 +168,15 @@ def whnf(expr: Expr) -> Expr:
     return expr
 
 def instantiate(expr: Expr, arg: Expr, offset: int = 0) -> Expr:
+    """
+    Instantiate the bound variable at the current offset with the given argument `arg`.
+    By default offset is 0, so the bound variable immediately "above" is instantiated.
+    """
     match expr:
         case BVar(index):
             return arg if index == offset else expr
-        case App(fn, arg):
-            return App(instantiate(fn, arg, offset), instantiate(arg, arg, offset))
+        case App(fn, arg_inner):
+            return App(instantiate(fn, arg, offset), instantiate(arg_inner, arg, offset))
         case Lambda(var, binder_type, binder_info, body):
             return Lambda(var, instantiate(binder_type, arg, offset), binder_info, instantiate(body, arg, offset + 1))
         case Forall(var, binder_type, binder_info, body):
@@ -159,6 +187,27 @@ def instantiate(expr: Expr, arg: Expr, offset: int = 0) -> Expr:
             return Projection(type_name, index, instantiate(struct, arg, offset))
         case _:
             return expr
+
+def abstract(expr: Expr, fvar: FVar, offset: int = 0) -> Expr:
+    """
+    Abstract the free variable `fvar` from the expression `expr` with the correct De Bruijn index.
+    """
+    match expr:
+        case FVar(index):
+            return BVar(offset) if index == offset else expr
+        case App(fn, arg_inner):
+            return App(abstract(fn, fvar, offset), abstract(arg_inner, fvar, offset))
+        case Lambda(var, binder_type, binder_info, body):
+            return Lambda(var, abstract(binder_type, fvar, offset), binder_info, abstract(body, fvar, offset + 1))
+        case Forall(var, binder_type, binder_info, body):
+            return Forall(var, abstract(binder_type, fvar, offset), binder_info, abstract(body, fvar, offset + 1))
+        case Let(var, binder_type, value, body, nondep):
+            return Let(var, abstract(binder_type, fvar, offset), abstract(value, fvar, offset), abstract(body, fvar, offset + 1), nondep)
+        case Projection(type_name=type_name, index=index, struct=struct):
+            return Projection(type_name, index, abstract(struct, fvar, offset))
+        case _:
+            return expr
+
 
 
 def num_loose_bound_variables(expr: Expr) -> int:
