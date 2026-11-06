@@ -1,3 +1,5 @@
+import re
+
 from loguru import logger
 
 from yalk.parser import ExportedDefinitions
@@ -5,6 +7,7 @@ from yalk.types import (
     App,
     Axiom,
     BVar,
+    BinderInfo,
     Constructor,
     Declaration,
     DeclarationInfo,
@@ -111,6 +114,7 @@ class TypeChecker:
         return Sort(Zero())
 
     def infer_sort(self, sort: Sort) -> Expr:
+        # all the universe parameters referenced in the sort must be defined
         if self.declaring_info is not None and not all_uparams_defined(
             sort.level, self.declaring_info.level_params
         ):
@@ -118,7 +122,7 @@ class TypeChecker:
                 f"level {sort.level} contains undefined universe parameters"
             )
 
-        # The type of Sort n is Sort (succ n)
+        # the type of Sort n is Sort (succ n)
         return Sort(Succ(sort.level))
 
     def infer_app(self, app: App) -> Expr:
@@ -158,6 +162,23 @@ class TypeChecker:
         # the type of the lambda is a pi, with the binder type as the domain and the body as the codomain
         return Forall(lam.var, lam.binder_type, lam.binder_info, body_type_abstracted)
 
+    def infer_pi(self, pi: Forall) -> Expr:
+        # the type of the binder type must be a sort
+        binder_type_type = whnf(self.infer_term(pi.binder_type))
+        if not isinstance(binder_type_type, Sort):
+            raise KernelError(f"expected a sort, got {binder_type_type}")
+
+        # replce the binder with a fresh free variable and infer the body type
+        fvar = self.new_free_variable(pi.binder_type)
+        body = instantiate(pi.body, fvar)
+        body_type = whnf(self.infer_term(body))
+
+        # we are in a pi, so the body type must also be a sort
+        if not isinstance(body_type, Sort):
+            raise KernelError(f"expected a sort, got {body_type}")
+
+        # the type of a pi is the sort IMax(binder sort level, body sort level)
+        return Sort(IMax(binder_type_type.level, body_type.level))
 
 def def_eq(expr1: Expr, expr2: Expr) -> bool:
     # TODO: I wish it was this easy...
