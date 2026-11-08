@@ -1,13 +1,12 @@
-import re
-
 from loguru import logger
 
 from yalk.parser import ExportedDefinitions
 from yalk.types import (
     App,
     Axiom,
-    BVar,
     BinderInfo,
+    BVar,
+    Const,
     Constructor,
     Declaration,
     DeclarationInfo,
@@ -17,6 +16,7 @@ from yalk.types import (
     FVar,
     IMax,
     Inductive,
+    InductiveBlock,
     Lambda,
     Let,
     Level,
@@ -195,20 +195,49 @@ class TypeChecker:
         # the type of the value must be equal to the binder type
         value_type = self.infer_term(let.value)
         if not def_eq(let.binder_type, value_type):
-            raise KernelError(f"binder type {let.binder_type} does not match value type {value_type}")
+            raise KernelError(
+                f"binder type {let.binder_type} does not match value type {value_type}"
+            )
 
         # the type of a let x: A = val in body is
         # the type of the body with x replaced by val
         body = instantiate(let.body, let.value)
         return self.infer_term(body)
 
+    def infer_const(self, const: Const) -> Expr:
+        # find the term in the environment
+        if const.name not in self.env.constants:
+            raise KernelError(f"undeclared constant: {const.name}")
+        term = self.env.get(const.name)
+
+        # instantiate all universe parameters with the concrete universes in const.universes
+        if self.declaring_info is not None:
+            # check that all universe parameters referenced in the universe parameters we need to
+            # substitute in the term are bound by the current declaration
+            for uparam in const.universes:
+                if not all_uparams_defined(uparam, self.declaring_info.level_params):
+                    raise KernelError(f"universe parameter {uparam} not defined")
+
+        declaration_type = get_declaration_info(term).declaration_type
+
+        # by induction on the env, this term has already been type checked to be of type `declaration_type`
+        # the only thing left to do is to instantiate the universe parameters of the declaration using
+        # the concrete universe levels provided in the const term
+        universe_parameters = get_universe_parameters(term)
+        if len(universe_parameters) != len(const.universes):
+            raise KernelError(f"universe parameter count mismatch for {const.name}")
+
+        return instantiate_universe_parameters(declaration_type, universe_parameters, const.universes)
+
 def def_eq(expr1: Expr, expr2: Expr) -> bool:
     # TODO: I wish it was this easy...
     return expr1 == expr2
 
+
 def whnf(expr: Expr) -> Expr:
     # TODO
     return expr
+
 
 def instantiate(expr: Expr, arg: Expr, offset: int = 0) -> Expr:
     """
@@ -219,17 +248,36 @@ def instantiate(expr: Expr, arg: Expr, offset: int = 0) -> Expr:
         case BVar(index):
             return arg if index == offset else expr
         case App(fn, arg_inner):
-            return App(instantiate(fn, arg, offset), instantiate(arg_inner, arg, offset))
+            return App(
+                instantiate(fn, arg, offset), instantiate(arg_inner, arg, offset)
+            )
         case Lambda(var, binder_type, binder_info, body):
-            return Lambda(var, instantiate(binder_type, arg, offset), binder_info, instantiate(body, arg, offset + 1))
+            return Lambda(
+                var,
+                instantiate(binder_type, arg, offset),
+                binder_info,
+                instantiate(body, arg, offset + 1),
+            )
         case Forall(var, binder_type, binder_info, body):
-            return Forall(var, instantiate(binder_type, arg, offset), binder_info, instantiate(body, arg, offset + 1))
+            return Forall(
+                var,
+                instantiate(binder_type, arg, offset),
+                binder_info,
+                instantiate(body, arg, offset + 1),
+            )
         case Let(var, binder_type, value, body, nondep):
-            return Let(var, instantiate(binder_type, arg, offset), instantiate(value, arg, offset), instantiate(body, arg, offset + 1), nondep)
+            return Let(
+                var,
+                instantiate(binder_type, arg, offset),
+                instantiate(value, arg, offset),
+                instantiate(body, arg, offset + 1),
+                nondep,
+            )
         case Projection(type_name=type_name, index=index, struct=struct):
             return Projection(type_name, index, instantiate(struct, arg, offset))
         case _:
             return expr
+
 
 def abstract(expr: Expr, fvar: FVar, offset: int = 0) -> Expr:
     """
@@ -241,16 +289,149 @@ def abstract(expr: Expr, fvar: FVar, offset: int = 0) -> Expr:
         case App(fn, arg_inner):
             return App(abstract(fn, fvar, offset), abstract(arg_inner, fvar, offset))
         case Lambda(var, binder_type, binder_info, body):
-            return Lambda(var, abstract(binder_type, fvar, offset), binder_info, abstract(body, fvar, offset + 1))
+            return Lambda(
+                var,
+                abstract(binder_type, fvar, offset),
+                binder_info,
+                abstract(body, fvar, offset + 1),
+            )
         case Forall(var, binder_type, binder_info, body):
-            return Forall(var, abstract(binder_type, fvar, offset), binder_info, abstract(body, fvar, offset + 1))
+            return Forall(
+                var,
+                abstract(binder_type, fvar, offset),
+                binder_info,
+                abstract(body, fvar, offset + 1),
+            )
         case Let(var, binder_type, value, body, nondep):
-            return Let(var, abstract(binder_type, fvar, offset), abstract(value, fvar, offset), abstract(body, fvar, offset + 1), nondep)
+            return Let(
+                var,
+                abstract(binder_type, fvar, offset),
+                abstract(value, fvar, offset),
+                abstract(body, fvar, offset + 1),
+                nondep,
+            )
         case Projection(type_name=type_name, index=index, struct=struct):
             return Projection(type_name, index, abstract(struct, fvar, offset))
         case _:
             return expr
 
+
+def instantiate_universe_parameters(
+    expr: Expr, parameters: tuple[Name, ...], universes: tuple[Level, ...]
+) -> Expr:
+    """
+    Instantiate universe parameters of a declaration type with the given concrete universe levels
+    """
+    match expr:
+        case BVar(index=index):
+            raise KernelError(f"unbound variable {index}")
+        case FVar(name=name):
+            raise KernelError(f"unbound variable {name}")
+        case Const(name=name, universes=input_universes):
+            output_universes = []
+            for universe in input_universes:
+                output_universes.append(
+                    instantiate_level_universe_parameters(
+                        universe, parameters, universes
+                    )
+                )
+            return Const(name, tuple(output_universes))
+        case Sort(level=level):
+            return Sort(
+                instantiate_level_universe_parameters(level, parameters, universes)
+            )
+        case App(fn=fn, arg=arg):
+            return App(
+                instantiate_universe_parameters(fn, parameters, universes),
+                instantiate_universe_parameters(arg, parameters, universes),
+            )
+        case Lambda(
+            var=var, binder_type=binder_type, binder_info=binder_info, body=body
+        ):
+            return Lambda(
+                var,
+                instantiate_universe_parameters(binder_type, parameters, universes),
+                binder_info,
+                instantiate_universe_parameters(body, parameters, universes),
+            )
+        case Forall(
+            var=var, binder_type=binder_type, binder_info=binder_info, body=body
+        ):
+            return Forall(
+                var,
+                instantiate_universe_parameters(binder_type, parameters, universes),
+                binder_info,
+                instantiate_universe_parameters(body, parameters, universes),
+            )
+        case Let(
+            var=var, binder_type=binder_type, value=value, body=body, nondep=nondep
+        ):
+            return Let(
+                var,
+                instantiate_universe_parameters(binder_type, parameters, universes),
+                instantiate_universe_parameters(value, parameters, universes),
+                instantiate_universe_parameters(body, parameters, universes),
+                nondep,
+            )
+        case Projection(type_name=type_name, index=index, struct=struct):
+            return Projection(
+                type_name,
+                index,
+                instantiate_universe_parameters(struct, parameters, universes),
+            )
+        case _:
+            return expr
+
+
+def instantiate_level_universe_parameters(
+    level: Level, parameters: tuple[Name, ...], universes: tuple[Level, ...]
+) -> Level:
+    match level:
+        case Zero():
+            return Zero()
+        case Succ(pred=pred):
+            return Succ(
+                instantiate_level_universe_parameters(pred, parameters, universes)
+            )
+        case Param(name=name):
+            for param, universe in zip(parameters, universes):
+                if name == param:
+                    return universe
+            return Param(name)
+        case Max(left=left, right=right):
+            return Max(
+                instantiate_level_universe_parameters(left, parameters, universes),
+                instantiate_level_universe_parameters(right, parameters, universes),
+            )
+        case IMax(left=left, right=right):
+            return IMax(
+                instantiate_level_universe_parameters(left, parameters, universes),
+                instantiate_level_universe_parameters(right, parameters, universes),
+            )
+
+
+def get_universe_parameters(declaration: ConstantInfo) -> tuple[Name, ...]:
+    return get_declaration_info(declaration).level_params
+
+
+def get_declaration_info(declaration: ConstantInfo) -> DeclarationInfo:
+    match declaration:
+        case Definition(declaration_info):
+            return declaration_info
+        case Axiom(declaration_info):
+            return declaration_info
+        case Theorem(declaration_info):
+            return declaration_info
+        case Opaque(declaration_info):
+            return declaration_info
+        case Quot(declaration_info):
+            return declaration_info
+        case Inductive(declaration_info):
+            return declaration_info
+        case _:
+            raise KernelError(
+                f"trying to retrieve declaration info for declaration {declaration}"
+            )
 
 
 def num_loose_bound_variables(expr: Expr) -> int:
