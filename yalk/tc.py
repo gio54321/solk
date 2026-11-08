@@ -83,7 +83,9 @@ def check_declaration_info(env: Environment, info: DeclarationInfo) -> None:
 
     # ensure that the type of the declaration type is a Sort _
     tc = TypeChecker(env, info)
-    inferred_type = tc.infer_term(info.declaration_type)
+    inferred_type = whnf(tc.infer_term(info.declaration_type))
+    if not isinstance(inferred_type, Sort):
+        raise KernelError(f"declaration type is not a sort: {inferred_type}")
 
 
 class TypeChecker:
@@ -227,7 +229,10 @@ class TypeChecker:
         if len(universe_parameters) != len(const.universes):
             raise KernelError(f"universe parameter count mismatch for {const.name}")
 
-        return instantiate_universe_parameters(declaration_type, universe_parameters, const.universes)
+        return instantiate_universe_parameters(
+            declaration_type, universe_parameters, const.universes
+        )
+
 
 def def_eq(expr1: Expr, expr2: Expr) -> bool:
     # TODO: I wish it was this easy...
