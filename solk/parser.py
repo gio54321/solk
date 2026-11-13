@@ -34,27 +34,28 @@ def declaration_names(decl: Declaration) -> List[Name]:
 class ExportedDefinitions:
     def __init__(self) -> None:
         self.meta: Optional[Meta] = None
-        # the names list is initialized with the Anon name at index 0
-        self.names: List[Name] = [Anon()]
-        # the levels list is intialized with a Zero level, which is the lowest universe level
-        self.levels: List[Level] = [Zero()]
-        # expressions have no implicit entry: the first one has index 0
-        self.exprs: List[Expr] = []
+        # The tables map the indices used in the file to their values. The indices are usually
+        # 0, 1, 2, ... in order, but nothing requires it: a value just has to be defined before
+        # it is referenced. Index 0 is implicitly the anonymous name and the zero level.
+        self.names: Dict[int, Name] = {0: Anon()}
+        self.levels: Dict[int, Level] = {0: Zero()}
+        # expressions have no implicit entry
+        self.exprs: Dict[int, Expr] = {}
         # declarations, in the order in which they appear in the file
         # (dependencies come before their uses)
         self.declarations: List[Declaration] = []
 
     @staticmethod
-    def _get(table: List[T], index: int, kind: str) -> T:
-        if not isinstance(index, int) or not 0 <= index < len(table):
-            raise ParseError(f"{kind} index {index} is out of bounds (have {len(table)})")
+    def _get(table: Dict[int, T], index: int, kind: str) -> T:
+        if not isinstance(index, int) or index not in table:
+            raise ParseError(f"{kind} index {index} is not defined")
         return table[index]
 
     @staticmethod
-    def _add(table: List[T], index: int, value: T, kind: str) -> None:
-        if index != len(table):
-            raise ParseError(f"{kind} index {index} is not sequential (expected {len(table)})")
-        table.append(value)
+    def _add(table: Dict[int, T], index: int, value: T, kind: str) -> None:
+        if not isinstance(index, int) or index in table:
+            raise ParseError(f"{kind} index {index} is defined twice")
+        table[index] = value
 
     def set_meta(self, meta: Meta) -> None:
         if self.meta is not None:
