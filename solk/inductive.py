@@ -1,7 +1,8 @@
 from dataclasses import replace
 
 from solk.levels import is_never_zero, is_zero, level_equiv, level_geq
-from solk.tc import Environment, TypeChecker, check_declaration_info
+from solk.environment import Environment, check_declaration_info
+from solk.tc import TypeChecker
 from solk.utils import (
     KernelError,
     ensure_parameters_unique,
@@ -196,7 +197,7 @@ class InductiveBlockChecker:
             if j == 0:
                 self.result_level = type_.level
             elif not level_equiv(type_.level, self.result_level):
-                raise KernelError(f"mutual inductive types must live in the same universe")
+                raise KernelError("mutual inductive types must live in the same universe")
             self.indices.append(indices)
             self.with_params.append(with_params)
             self.major_types.append(with_indices)
