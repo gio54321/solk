@@ -23,6 +23,7 @@ from solk.types import (
     Let,
     Level,
     Max,
+    MData,
     Name,
     NatLiteral,
     Opaque,
@@ -87,7 +88,7 @@ def check_declaration_info(env: Environment, info: DeclarationInfo) -> None:
 
     # ensure that the type of the declaration type is a Sort _
     tc = TypeChecker(env, info)
-    inferred_type = whnf(tc.infer_term(info.declaration_type))
+    inferred_type = tc.whnf(tc.infer_term(info.declaration_type))
     if not isinstance(inferred_type, Sort):
         raise KernelError(f"declaration type is not a sort: {inferred_type}")
 
@@ -147,7 +148,7 @@ class TypeChecker:
 
     def infer_app(self, app: App) -> Expr:
         # get the type of the function, it must be pi
-        fun_type = whnf(self.infer_term(app.fn))
+        fun_type = self.whnf(self.infer_term(app.fn))
         if not isinstance(fun_type, Forall):
             raise KernelError(f"expected a forall type, got {fun_type}")
 
@@ -164,7 +165,7 @@ class TypeChecker:
 
     def infer_lambda(self, lam: Lambda) -> Expr:
         # the type of the binder type must be a sort
-        binder_type_type = whnf(self.infer_term(lam.binder_type))
+        binder_type_type = self.whnf(self.infer_term(lam.binder_type))
         if not isinstance(binder_type_type, Sort):
             raise KernelError(f"expected a sort, got {binder_type_type}")
 
@@ -184,14 +185,14 @@ class TypeChecker:
 
     def infer_pi(self, pi: Forall) -> Expr:
         # the type of the binder type must be a sort
-        binder_type_type = whnf(self.infer_term(pi.binder_type))
+        binder_type_type = self.whnf(self.infer_term(pi.binder_type))
         if not isinstance(binder_type_type, Sort):
             raise KernelError(f"expected a sort, got {binder_type_type}")
 
         # replce the binder with a fresh free variable and infer the body type
         fvar = self.new_free_variable(pi.binder_type)
         body = instantiate(pi.body, fvar)
-        body_type = whnf(self.infer_term(body))
+        body_type = self.whnf(self.infer_term(body))
 
         # we are in a pi, so the body type must also be a sort
         if not isinstance(body_type, Sort):
@@ -202,7 +203,7 @@ class TypeChecker:
 
     def infer_let(self, let: Let) -> Expr:
         # the type of the binder type must be a sort
-        binder_type_type = whnf(self.infer_term(let.binder_type))
+        binder_type_type = self.whnf(self.infer_term(let.binder_type))
         if not isinstance(binder_type_type, Sort):
             raise KernelError(f"expected a sort, got {binder_type_type}")
 
@@ -258,7 +259,7 @@ class TypeChecker:
         # by proof irrelevance, any proof for the same proposition is definitionally
         # equal. Therefore, it suffices to check definitional equality of the types
         # of t and s
-        type_type_t = whnf(self.infer_term(type_t))
+        type_type_t = self.whnf(self.infer_term(type_t))
         if isinstance(type_type_t, Sort):
             if normalizes_to_zero_level(type_type_t.level):
                 return self.def_eq(type_t, type_s)
@@ -267,12 +268,71 @@ class TypeChecker:
         # TODO: I wish it was this easy...
         return t == s
 
+    def whnf(self, expr: Expr) -> Expr:
+        match expr:
+            case MData(inner, _):
+                # metadata is irrelevant for the kernel
+                return self.whnf(inner)
 
+            case Let(_, _, value, body, _):
+                # zeta rule:
+                # let x := value; body -> body[x := value]
+                return self.whnf(instantiate(body, value))
 
+            case App(fn, arg):
+                # first bring the function to whnf: for `f a b`, this means reducing `f a`
+                fn = self.whnf(fn)
+                if isinstance(fn, Lambda):
+                    # beta rule:
+                    # (lambda x, body) arg -> body[x := arg]
+                    return self.whnf(instantiate(fn.body, arg))
+                # TODO: iota, i.e. `fn arg` is a fully applied recursor whose major premise reduces
+                # to a constructor
+                return App(fn, arg)
 
-def whnf(expr: Expr) -> Expr:
-    # TODO
-    return expr
+            case Const(name, universes):
+                # delta rule: the value of a constant is the value of its definition.
+                # only definitions and theorems have a value. Axioms, opaque definitions,
+                # inductive types, constructors and recursors are stuck.
+                decl = self.env.constants.get(name)
+                if not isinstance(decl, (Definition, Theorem)):
+                    return expr
+                if len(universes) != len(decl.info.level_params):
+                    return expr
+                value = instantiate_universe_parameters(
+                    decl.value, decl.info.level_params, universes
+                )
+                return self.whnf(value)
+
+            case Projection(type_name, index, struct):
+                # proj: the structure must reduce to a constructor application `S.mk args`
+                struct = self.whnf(struct)
+                # TODO: string literals are structures (`String.ofList [chars]`) and can be projected
+                if isinstance(struct, StringLiteral):
+                    raise NotImplementedError("projection out of a string literal")
+
+                # split `S.mk a0 ... ak` into the head `S.mk` and the arguments `[a0, ..., ak]`
+                ctor: Expr = struct
+                args: list[Expr] = []
+                while isinstance(ctor, App):
+                    args.insert(0, ctor.arg)
+                    ctor = ctor.fn
+
+                if not isinstance(ctor, Const):
+                    return expr
+                decl = self.env.constants.get(ctor.name)
+                if not isinstance(decl, Constructor) or decl.inductive_name != type_name:
+                    return expr
+
+                # the arguments of the constructor are the parameters of `S`, then its fields
+                field = decl.num_params + index
+                if field >= len(args):
+                    return expr  # partially applied constructor
+                return self.whnf(args[field])
+
+            case _:
+                # everything else is already in whnf
+                return expr
 
 def normalizes_to_zero_level(level: Level) -> bool:
     match level:
@@ -372,10 +432,6 @@ def instantiate_universe_parameters(
     Instantiate universe parameters of a declaration type with the given concrete universe levels
     """
     match expr:
-        case BVar(index=index):
-            raise KernelError(f"unbound variable {index}")
-        case FVar(name=name):
-            raise KernelError(f"unbound variable {name}")
         case Const(name=name, universes=input_universes):
             output_universes = []
             for universe in input_universes:
