@@ -1,0 +1,1 @@
+theorem test : Nat.shiftLeft 3 100 = 3802951800684688204490109616128 := rfl

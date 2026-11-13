@@ -221,3 +221,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+# exported tests, see scripts/export_tests.py
+tests/exports/
+# lake build output
+tests/lean/.lake/

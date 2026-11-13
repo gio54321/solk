@@ -1,0 +1,6 @@
+name = "tests"
+defaultTargets = ["Tests"]
+
+[[lean_lib]]
+name = "Tests"
+globs = ["Tests.+"]

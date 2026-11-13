@@ -1,11 +1,17 @@
 """
-Run solk on the tests of the Lean Kernel Arena (https://github.com/leanprover/lean-kernel-arena)
-and compare with the expected outcomes.
+Run solk on a directory of exported tests and compare with the expected outcomes.
 
-Build the tests in a checkout of the arena first, e.g. `uv run lka.py build-test 'tutorial'`,
-then run
+The expected outcome of `<name>.ndjson` is read from `<name>.stats.json`, as written by the Lean
+Kernel Arena (https://github.com/leanprover/lean-kernel-arena), or else from the directory
+containing it: `good` tests must be accepted, `bad` tests rejected. So this runs both our own
+tests (see `scripts/export_tests.py`)
 
-    python3 scripts/arena.py <arena>/_build/tests [glob] [--timeout SECONDS]
+    python3 scripts/run_tests.py tests/exports
+
+and the arena tests, once built in a checkout of the arena with e.g.
+`uv run lka.py build-test 'tutorial'`:
+
+    python3 scripts/run_tests.py <arena>/_build/tests [glob] [--timeout SECONDS]
 """
 
 import argparse
@@ -38,9 +44,9 @@ def run(test: Path, timeout: float) -> tuple[str, str]:
 
 def expected_outcome(test: Path) -> str:
     stats = test.with_suffix(".stats.json")
-    if not stats.exists():
-        return "?"
-    return str(json.loads(stats.read_text()).get("outcome", "?"))
+    if stats.exists():
+        return str(json.loads(stats.read_text()).get("outcome", "?"))
+    return {"good": "accept", "bad": "reject"}.get(test.parent.name, "?")
 
 
 def is_correct(outcome: str, status: str) -> bool:
