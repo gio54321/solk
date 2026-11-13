@@ -27,7 +27,8 @@ together with everything that depends on them, and the rest is still checked.
 - `tests/lean` contains small Lean files, each with a declaration `test` that must be accepted
   (`Good`) or rejected (`Bad`). Export them with
   `python3 scripts/export_tests.py <path to lean4export>`, then run them with
-  `python3 scripts/run_tests.py tests/exports`.
+  `python3 scripts/run_tests.py tests/exports`. The export also includes some theorems of the Lean
+  core library, in `tests/exports/init`: run them with `--skip-unsupported` and a long `--timeout`.
 - `tests/handcrafted` contains export files written by hand, for what Lean cannot produce:
   `python3 scripts/run_tests.py tests/handcrafted`.
 - The tests of the [Lean Kernel Arena](https://github.com/leanprover/lean-kernel-arena) can be run
