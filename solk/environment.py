@@ -56,9 +56,11 @@ class Environment:
 
                 check_inductive_block(self, decl)
                 return
-            case _:
-                # TODO: Quot
-                return
+            case Quot():
+                # imported here for the same reason as `inductive.py`
+                from solk.quot import check_quot
+
+                check_quot(self, decl)
         self.constants[decl.info.name] = decl
 
 
