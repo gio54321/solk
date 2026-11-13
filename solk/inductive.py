@@ -425,6 +425,9 @@ class InductiveBlockChecker:
                 raise KernelError(f"exported recursor does not match: {exported.info.name}")
 
         for rec in self.block.recursors:
+            # e.g. a constructor `I.rec` would be replaced by the recursor
+            if rec.info.name in self.env.constants:
+                raise KernelError(f"already declared: {rec.info.name}")
             self.env.constants[rec.info.name] = rec
 
     def elimination_level(self) -> Level:
