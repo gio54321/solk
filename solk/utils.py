@@ -14,6 +14,7 @@ from solk.types import (
     Name,
     Projection,
     Sort,
+    StrName,
 )
 
 
@@ -183,6 +184,76 @@ def has_free_variables(expr: Expr) -> bool:
             return False
 
 
+def get_head(expr: Expr) -> Expr:
+    """
+    The head `f` of the application `f a1 ... an`.
+    """
+    return get_head(expr.fn) if isinstance(expr, App) else expr
+
+
+def get_num_args(expr: Expr) -> int:
+    """
+    The number `n` of arguments of the application `f a1 ... an`.
+    """
+    return 1 + get_num_args(expr.fn) if isinstance(expr, App) else 0
+
+
+def get_fn(expr: Expr, n: int) -> Expr:
+    """
+    `f a1 ... a(k-n)`, i.e. the application `f a1 ... ak` without its last `n` arguments.
+    """
+    if n == 0:
+        return expr
+    assert isinstance(expr, App)
+    return get_fn(expr.fn, n - 1)
+
+
+def replace_fn(expr: Expr, n: int, new: Expr) -> Expr:
+    """
+    `new a(k-n+1) ... ak`, i.e. the application `f a1 ... ak` keeping only its last `n` arguments,
+    and applying `new` to them instead. With `n = k`, this replaces the head `f` with `new`.
+    """
+    if n == 0:
+        return new
+    assert isinstance(expr, App)
+    return App(replace_fn(expr.fn, n - 1, new), expr.arg)
+
+
+def has_loose_bvar(expr: Expr, index: int = 0) -> bool:
+    """
+    True iff the bound variable `index`, bound by some binder outside of `expr`, occurs in `expr`.
+    """
+    match expr:
+        case BVar(i):
+            return i == index
+        case App(fn, arg):
+            return has_loose_bvar(fn, index) or has_loose_bvar(arg, index)
+        case Lambda(_, binder_type, _, body) | Forall(_, binder_type, _, body):
+            return has_loose_bvar(binder_type, index) or has_loose_bvar(body, index + 1)
+        case Let(_, binder_type, value, body, _):
+            return (
+                has_loose_bvar(binder_type, index)
+                or has_loose_bvar(value, index)
+                or has_loose_bvar(body, index + 1)
+            )
+        case Projection(_, _, struct):
+            return has_loose_bvar(struct, index)
+        case MData(inner, _):
+            return has_loose_bvar(inner, index)
+        case _:
+            return False
+
+
+def mk_name(*parts: str) -> Name:
+    """
+    The hierarchical name `parts[0].parts[1]...`, e.g. `mk_name("Nat", "succ")` is `Nat.succ`.
+    """
+    name: Name = Anon()
+    for part in parts:
+        name = StrName(name, part)
+    return name
+
+
 def ensure_parameters_unique(parameters: tuple[Name, ...]) -> None:
     seen_names = set()
     for name in parameters:
@@ -238,3 +309,24 @@ def erase_binder_names(expr: Expr) -> Expr:
             return erase_binder_names(inner)
         case _:
             return expr
+
+
+def consume_type_annotations(type_: Expr) -> Expr:
+    """
+    `type_` without the annotations the elaborator puts on binder types, e.g. `outParam α` is
+    `α`. These are definitions that just return their type argument, and the official kernel
+    removes them from the binder types of the generated recursors.
+    """
+    match type_:
+        case App(Const(name, _), inner) if name in (
+            mk_name("outParam"),
+            mk_name("semiOutParam"),
+        ):
+            return consume_type_annotations(inner)
+        case App(App(Const(name, _), inner), _) if name in (
+            mk_name("optParam"),
+            mk_name("autoParam"),
+        ):
+            return consume_type_annotations(inner)
+        case _:
+            return type_

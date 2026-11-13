@@ -5,6 +5,7 @@ from solk.environment import Environment, check_declaration_info
 from solk.tc import TypeChecker
 from solk.utils import (
     KernelError,
+    consume_type_annotations,
     ensure_parameters_unique,
     erase_binder_names,
     instantiate,
@@ -177,13 +178,13 @@ class InductiveBlockChecker:
                 if i < self.num_params:
                     if j == 0:
                         # the parameters of the first type become *the* parameters of the block
-                        self.params.append(self.tc.new_free_variable(type_.binder_type))
+                        self.params.append(self.tc.new_free_variable(consume_type_annotations(type_.binder_type)))
                     elif not self.tc.def_eq(type_.binder_type, self.tc.type_of(self.params[i])):
                         raise KernelError(f"parameters of {t.info.name} do not match")
                     type_ = instantiate(type_.body, self.params[i])
                     with_params = with_indices = App(with_params, self.params[i])
                 else:
-                    index = self.tc.new_free_variable(type_.binder_type)
+                    index = self.tc.new_free_variable(consume_type_annotations(type_.binder_type))
                     indices.append(index)
                     type_ = instantiate(type_.body, index)
                     with_indices = App(with_indices, index)
@@ -272,7 +273,7 @@ class InductiveBlockChecker:
                         ):
                             raise KernelError(f"argument {i} of {name} lives in a universe too large")
                         self.check_positivity(type_.binder_type, name)
-                        field = self.tc.new_free_variable(type_.binder_type)
+                        field = self.tc.new_free_variable(consume_type_annotations(type_.binder_type))
                         fields.append(field)
                         type_ = instantiate(type_.body, field)
                         ctor_app = App(ctor_app, field)
@@ -309,7 +310,7 @@ class InductiveBlockChecker:
         if isinstance(type_, Forall):
             if mentions_constant(type_.binder_type, self.names):
                 raise KernelError(f"non-positive occurrence of the block in {ctor_name}")
-            y = self.tc.new_free_variable(type_.binder_type)
+            y = self.tc.new_free_variable(consume_type_annotations(type_.binder_type))
             self.check_positivity(instantiate(type_.body, y), ctor_name)
         elif self.applied_type(type_) is None:
             raise KernelError(f"invalid occurrence of the block in {ctor_name}: {type_}")
@@ -470,7 +471,7 @@ class InductiveBlockChecker:
         ys: list[FVar] = []
         field_app: Expr = field
         while isinstance(type_, Forall):
-            y = self.tc.new_free_variable(type_.binder_type)
+            y = self.tc.new_free_variable(consume_type_annotations(type_.binder_type))
             ys.append(y)
             field_app = App(field_app, y)
             type_ = self.tc.whnf(instantiate(type_.body, y))
