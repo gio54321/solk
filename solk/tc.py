@@ -500,6 +500,15 @@ class TypeChecker:
         if not isinstance(decl, Constructor) or not self.is_structure(decl.inductive_name):
             return False
 
+        # if `t` is also a constructor application `S.mk params fields'`, its projections reduce
+        # to `fields'`: comparing them with `fields` would repeat the comparison of the
+        # arguments in `def_eq_stuck`, which already failed. With nested structures (e.g.
+        # `String` contains a `ByteArray`, which contains an `Array`...), repeating it at each
+        # level would take exponential time
+        t_head = get_head(t)
+        if isinstance(t_head, Const) and isinstance(self.env.constants.get(t_head.name), Constructor):
+            return False
+
         # the projections of `t` only make sense if `t` is also of type `S params`
         s_type = self.infer_term(s)
         if not self.def_eq(self.infer_term(t), s_type):
