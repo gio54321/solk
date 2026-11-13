@@ -101,6 +101,9 @@ class InductiveBlockChecker:
             if t.all_inductive_names != tuple(self.names):
                 raise KernelError(f"mismatched mutual block: {t.info.name}")
 
+        if len(set(self.names)) != len(self.names):
+            raise KernelError(f"duplicate inductive types in a block: {self.names}")
+
         ctor_names = [n for t in self.types for n in t.constructor_names]
         if [c.info.name for c in self.block.constructors] != ctor_names:
             raise KernelError(f"constructors do not match the inductive types: {self.names}")
