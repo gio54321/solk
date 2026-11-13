@@ -67,6 +67,8 @@ def instantiate(expr: Expr, arg: Expr, offset: int = 0) -> Expr:
             )
         case Projection(type_name=type_name, index=index, struct=struct):
             return Projection(type_name, index, instantiate(struct, arg, offset))
+        case MData(inner, data):
+            return MData(instantiate(inner, arg, offset), data)
         case _:
             return expr
 
@@ -104,6 +106,8 @@ def abstract(expr: Expr, fvar: FVar, offset: int = 0) -> Expr:
             )
         case Projection(type_name=type_name, index=index, struct=struct):
             return Projection(type_name, index, abstract(struct, fvar, offset))
+        case MData(inner, data):
+            return MData(abstract(inner, fvar, offset), data)
         case _:
             return expr
 
@@ -167,6 +171,8 @@ def instantiate_universe_parameters(
                 index,
                 instantiate_universe_parameters(struct, parameters, universes),
             )
+        case MData(inner, data):
+            return MData(instantiate_universe_parameters(inner, parameters, universes), data)
         case _:
             return expr
 
@@ -189,6 +195,8 @@ def has_free_variables(expr: Expr) -> bool:
             )
         case Projection(struct=struct):
             return has_free_variables(struct)
+        case MData(inner, _):
+            return has_free_variables(inner)
         case _:
             return False
 
