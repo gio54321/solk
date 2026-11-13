@@ -342,6 +342,10 @@ class TypeChecker:
         """
         if t == s:
             return True
+        # two different literals are never equal, e.g. `1000 =?= 1001` (comparing them by
+        # removing one `Nat.succ` at a time would take forever)
+        if isinstance(t, NatLiteral | StringLiteral) and isinstance(s, NatLiteral | StringLiteral):
+            return False
         if isinstance(t, Sort) and isinstance(s, Sort):
             return level_equiv(t.level, s.level)
         if (isinstance(t, Lambda) and isinstance(s, Lambda)) or (
