@@ -28,7 +28,7 @@ MAX_EXPONENT = 2**24
 
 
 def nat_pow(base: int, exponent: int) -> int:
-    if exponent > MAX_EXPONENT:
+    if base > 1 and exponent > MAX_EXPONENT:
         raise KernelError(f"refusing to compute Nat.pow with exponent {exponent}")
     return int(base**exponent)  # `**` on ints may return a float, but not here
 
