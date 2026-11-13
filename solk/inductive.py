@@ -5,6 +5,7 @@ from solk.environment import Environment, check_declaration_info
 from solk.tc import TypeChecker
 from solk.utils import (
     KernelError,
+    UnsupportedError,
     consume_type_annotations,
     ensure_parameters_unique,
     erase_binder_names,
@@ -94,7 +95,7 @@ class InductiveBlockChecker:
             if t.is_unsafe:
                 raise KernelError(f"unsafe inductive type: {t.info.name}")
             if t.num_nested != 0:
-                raise KernelError(f"nested inductive types are not supported: {t.info.name}")
+                raise UnsupportedError(f"nested inductive types are not supported: {t.info.name}")
             if t.info.level_params != self.level_params or t.num_params != self.num_params:
                 raise KernelError(f"mismatched (universe) parameters: {t.info.name}")
             if t.all_inductive_names != tuple(self.names):

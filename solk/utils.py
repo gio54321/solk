@@ -22,6 +22,13 @@ class KernelError(Exception):
     pass
 
 
+class UnsupportedError(Exception):
+    """
+    A declaration this kernel intentionally does not handle, such as a nested inductive type.
+    It is neither accepted nor rejected.
+    """
+
+
 def instantiate(expr: Expr, arg: Expr, offset: int = 0) -> Expr:
     """
     Instantiate the bound variable at the current offset with the given argument `arg`.
