@@ -5,6 +5,19 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from solk.levels import all_uparams_defined, is_zero, level_equiv
+from solk.literals import (
+    BOOL_FALSE,
+    BOOL_TRUE,
+    NAT,
+    NAT_BINARY_OPS,
+    NAT_SUCC,
+    STRING,
+    literal_to_constructor,
+    nat_lit_to_constructor,
+    nat_predecessor,
+    nat_value,
+    string_lit_to_constructor,
+)
 from solk.types import (
     Anon,
     App,
@@ -32,7 +45,6 @@ from solk.types import (
     StrName,
     Succ,
     Theorem,
-    Zero,
 )
 from solk.utils import (
     KernelError,
@@ -40,45 +52,15 @@ from solk.utils import (
     get_fn,
     get_head,
     get_num_args,
+    has_free_variables,
     has_loose_bvar,
     instantiate,
     instantiate_universe_parameters,
-    mk_name,
     replace_fn,
 )
 
 if TYPE_CHECKING:
     from solk.environment import Environment
-
-
-def nat_lit_to_constructor(n: int) -> Expr:
-    """
-    A nat literal as a constructor application: `0` is `Nat.zero`, `n + 1` is `Nat.succ n`.
-    """
-    if n == 0:
-        return Const(mk_name("Nat", "zero"), ())
-    return App(Const(mk_name("Nat", "succ"), ()), NatLiteral(n - 1))
-
-
-def string_lit_to_constructor(s: str) -> Expr:
-    """
-    A string literal as `String.ofList` of the list of its characters, e.g. `"ab"` is
-    `String.ofList [Char.ofNat 97, Char.ofNat 98]`.
-    """
-    char = Const(mk_name("Char"), ())
-    chars: Expr = App(Const(mk_name("List", "nil"), (Zero(),)), char)
-    for c in reversed(s):
-        code = App(Const(mk_name("Char", "ofNat"), ()), NatLiteral(ord(c)))
-        chars = App(App(App(Const(mk_name("List", "cons"), (Zero(),)), char), code), chars)
-    return App(Const(mk_name("String", "ofList"), ()), chars)
-
-
-def literal_to_constructor(lit: NatLiteral | StringLiteral) -> Expr:
-    match lit:
-        case NatLiteral(value):
-            return nat_lit_to_constructor(value)
-        case StringLiteral(value):
-            return string_lit_to_constructor(value)
 
 
 def unfold_order(decl: Definition | Theorem) -> float:
@@ -174,9 +156,9 @@ class TypeChecker:
             case Projection():
                 return self.infer_projection(term)
             case NatLiteral():
-                return Const(mk_name("Nat"), ())
+                return NAT
             case StringLiteral():
-                return Const(mk_name("String"), ())
+                return STRING
             case MData(inner, _):
                 return self.infer_term(inner)
 
@@ -342,6 +324,11 @@ class TypeChecker:
         if quick is not None:
             return quick
 
+        # proofs by reflection, such as those of the `decide` tactic, compare a closed boolean
+        # computation with `true`: evaluating it is much faster than comparing step by step
+        if s == BOOL_TRUE and not has_free_variables(t) and self.whnf(t) == BOOL_TRUE:
+            return True
+
         # if t is a proof, then by proof irrelevance, any proof of the same proposition is
         # definitionally equal to it. Therefore, it suffices to check definitional equality of
         # the types of t and s
@@ -375,6 +362,21 @@ class TypeChecker:
         quick = self.def_eq_quick(t, s)
         if quick is not None:
             return quick
+
+        # `n + 1 =?= m + 1` iff `n =?= m`, where `n + 1` is either `Nat.succ n` or a literal
+        t_pred, s_pred = nat_predecessor(t), nat_predecessor(s)
+        if t_pred is not None and s_pred is not None:
+            return self.def_eq(t_pred, s_pred)
+
+        # compute arithmetic on literals, e.g. `Nat.add 2 2 =?= 4`. With free variables, the
+        # arguments are unlikely to reduce to literals, so we do not even try
+        if not has_free_variables(t) and not has_free_variables(s):
+            t_value = self.reduce_nat(t)
+            if t_value is not None:
+                return self.def_eq(t_value, s)
+            s_value = self.reduce_nat(s)
+            if s_value is not None:
+                return self.def_eq(t, s_value)
 
         # lazy delta reduction: unfold definitions one at a time, hoping to find equal terms
         # without unfolding everything. E.g. `f (1 + 1) =?= f 2` holds without unfolding `f`,
@@ -566,8 +568,36 @@ class TypeChecker:
         unfolding definitions one at a time.
         """
         expr = self.whnf_core(expr)
+        value = self.reduce_nat(expr)
+        if value is not None:
+            return value
         unfolded = self.unfold_definition(expr)
         return expr if unfolded is None else self.whnf(unfolded)
+
+    def reduce_nat(self, expr: Expr) -> Expr | None:
+        """
+        Compute `Nat.succ n` and the binary functions in `NAT_BINARY_OPS`, e.g. `Nat.add 2 3`,
+        when their arguments reduce to literals. The result is a literal (or a `Bool` for the
+        comparisons): this is much faster than unfolding the definitions, which would work on
+        the unary representation `Nat.succ (Nat.succ ...)`.
+        """
+        match expr:
+            case App(fn, arg) if fn == NAT_SUCC:
+                n = nat_value(self.whnf(arg))
+                return None if n is None else NatLiteral(n + 1)
+            case App(App(Const(name, ()), arg1), arg2) if name in NAT_BINARY_OPS:
+                n1 = nat_value(self.whnf(arg1))
+                if n1 is None:
+                    return None
+                n2 = nat_value(self.whnf(arg2))
+                if n2 is None:
+                    return None
+                result = NAT_BINARY_OPS[name](n1, n2)
+                if isinstance(result, bool):
+                    return BOOL_TRUE if result else BOOL_FALSE
+                return NatLiteral(result)
+            case _:
+                return None
 
     def whnf_core(self, expr: Expr) -> Expr:
         """
