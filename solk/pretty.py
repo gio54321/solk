@@ -1,5 +1,5 @@
 from typing import Any
-from yalk.types import (
+from solk.types import (
     Anon, App, Axiom, BVar, Const, Declaration, DeclarationInfo, Definition,
     Expr, FVar, Forall, IMax, InductiveBlock, Lambda, Let, Level, Max, MData,
     Name, NatLiteral, Opaque, Param, Projection, Quot, Sort, StringLiteral,

@@ -2,8 +2,8 @@ from ast import Not
 
 from loguru import logger
 
-from yalk.parser import ExportedDefinitions
-from yalk.types import (
+from solk.parser import ExportedDefinitions
+from solk.types import (
     App,
     Axiom,
     BinderInfo,

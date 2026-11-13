@@ -2,7 +2,7 @@ from pathlib import Path
 import json
 from typing import Any, Callable, Dict, List, Optional, TypeVar, cast
 
-from yalk.types import (
+from solk.types import (
     Anon, App, Axiom, BinderInfo, BVar, Const, Constructor, Declaration,
     DeclarationInfo, Definition, DefinitionSafety, Expr, Forall, IMax,
     Inductive, InductiveBlock, Lambda, Let, Level, Max, MData, Meta, Name,
@@ -11,7 +11,7 @@ from yalk.types import (
     StringLiteral, StrName, Succ, Theorem, Zero,
 )
 
-from yalk.pretty import pp_declaration, pp_name
+from solk.pretty import pp_declaration, pp_name
 
 SUPPORTED_FORMAT_MAJOR = "3"
 
