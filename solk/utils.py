@@ -1,3 +1,5 @@
+from collections.abc import Collection
+
 from solk.levels import instantiate_level
 from solk.types import (
     Anon,
@@ -269,7 +271,7 @@ def ensure_parameters_unique(parameters: tuple[Name, ...]) -> None:
         seen_names.add(name)
 
 
-def mentions_constant(expr: Expr, names: list[Name]) -> bool:
+def mentions_constant(expr: Expr, names: Collection[Name]) -> bool:
     """
     True iff a constant named in `names` occurs in `expr`.
     """
