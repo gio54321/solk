@@ -12,7 +12,6 @@ from solk.literals import (
     NAT_BINARY_OPS,
     NAT_SUCC,
     STRING,
-    literal_to_constructor,
     nat_lit_to_constructor,
     nat_predecessor,
     nat_value,
@@ -363,7 +362,11 @@ class TypeChecker:
         if quick is not None:
             return quick
 
-        # `n + 1 =?= m + 1` iff `n =?= m`, where `n + 1` is either `Nat.succ n` or a literal
+        # compare natural numbers without turning literals into `Nat.succ` chains: `0` is
+        # `Nat.zero`, and `n + 1 =?= m + 1` iff `n =?= m`, where `n + 1` is either `Nat.succ n`
+        # or a literal
+        if nat_value(t) == 0 and nat_value(s) == 0:
+            return True
         t_pred, s_pred = nat_predecessor(t), nat_predecessor(s)
         if t_pred is not None and s_pred is not None:
             return self.def_eq(t_pred, s_pred)
@@ -405,13 +408,13 @@ class TypeChecker:
         if self.def_eq_stuck(t, s):
             return True
 
-        # a literal is equal to its constructor form, e.g. `3 =?= Nat.succ n` iff
-        # `Nat.succ 2 =?= Nat.succ n`. Two different literals are never equal.
-        literal = NatLiteral | StringLiteral
-        if isinstance(t, literal) and not isinstance(s, literal):
-            return self.def_eq(literal_to_constructor(t), s)
-        if isinstance(s, literal) and not isinstance(t, literal):
-            return self.def_eq(t, literal_to_constructor(s))
+        # a string literal is equal to its constructor form, e.g. `"a" =?= String.ofList [c]`
+        # iff `String.ofList [Char.ofNat 97] =?= String.ofList [c]`. Nat literals are already
+        # handled above. Two different literals are never equal.
+        if isinstance(t, StringLiteral) and not isinstance(s, StringLiteral):
+            return self.def_eq(string_lit_to_constructor(t.value), s)
+        if isinstance(s, StringLiteral) and not isinstance(t, StringLiteral):
+            return self.def_eq(t, string_lit_to_constructor(s.value))
 
         # the eta rules, which reduction alone cannot see
         return (

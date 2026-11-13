@@ -11,7 +11,7 @@ functions are the ones defined in `Init.Prelude`, which we trust to compute the 
 import math
 from collections.abc import Callable
 
-from solk.types import App, Const, Expr, Name, NatLiteral, StringLiteral, Zero
+from solk.types import App, Const, Expr, Name, NatLiteral, Zero
 from solk.utils import KernelError, mk_name
 
 NAT = Const(mk_name("Nat"), ())
@@ -103,10 +103,3 @@ def string_lit_to_constructor(s: str) -> Expr:
         chars = App(App(App(Const(mk_name("List", "cons"), (Zero(),)), char), code), chars)
     return App(STRING_OF_LIST, chars)
 
-
-def literal_to_constructor(lit: NatLiteral | StringLiteral) -> Expr:
-    match lit:
-        case NatLiteral(value):
-            return nat_lit_to_constructor(value)
-        case StringLiteral(value):
-            return string_lit_to_constructor(value)
