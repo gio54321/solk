@@ -1,12 +1,11 @@
-from ast import Not
+from collections.abc import Sequence
 
-from loguru import logger
-
+from solk.levels import all_uparams_defined, is_zero
 from solk.parser import ExportedDefinitions
 from solk.types import (
+    Anon,
     App,
     Axiom,
-    BinderInfo,
     BVar,
     Const,
     Constructor,
@@ -21,13 +20,10 @@ from solk.types import (
     InductiveBlock,
     Lambda,
     Let,
-    Level,
-    Max,
     MData,
     Name,
     NatLiteral,
     Opaque,
-    Param,
     Projection,
     Quot,
     Recursor,
@@ -35,16 +31,21 @@ from solk.types import (
     StringLiteral,
     Succ,
     Theorem,
-    Zero,
 )
+from solk.utils import (
+    KernelError,
+    abstract,
+    ensure_parameters_unique,
+    has_free_variables,
+    instantiate,
+    instantiate_universe_parameters,
+)
+from solk.inductive import check_inductive_block
+
 
 ConstantInfo = (
     Axiom | Definition | Theorem | Opaque | Quot | Inductive | Constructor | Recursor
 )
-
-
-class KernelError(Exception):
-    pass
 
 
 class Environment:
@@ -70,8 +71,11 @@ class Environment:
                 check_theorem(self, decl)
             case Opaque():
                 check_opaque(self, decl)
+            case InductiveBlock():
+                check_inductive_block(self, decl)
+                return
             case _:
-                # TODO: Quot and InductiveBlock
+                # TODO: Quot
                 return
         self.constants[decl.info.name] = decl
 
@@ -94,7 +98,7 @@ def check_definition(env: Environment, definition: Definition) -> None:
 def check_theorem(env: Environment, theorem: Theorem) -> None:
     # a theorem is a definition whose type is a proposition, i.e. whose type has type Prop
     sort = check_declaration_info(env, theorem.info)
-    if not normalizes_to_zero_level(sort.level):
+    if not is_zero(sort.level):
         raise KernelError(f"theorem type is not a proposition: {theorem.info.declaration_type}")
     check_value(env, theorem.info, theorem.value)
 
@@ -162,6 +166,32 @@ class TypeChecker:
         fvar = FVar(name=name)
         self.free_variables[name] = fvar_type
         return fvar
+
+    def type_of(self, fvar: FVar) -> Expr:
+        return self.free_variables[fvar.name]
+
+    def pi(self, fvars: Sequence[FVar], body: Expr) -> Expr:
+        """
+        `(x1 : T1) → ... → (xn : Tn) → body`, binding the free variables `fvars = [x1, ..., xn]`.
+        """
+        for fvar in reversed(fvars):
+            body = Forall(Anon(), self.type_of(fvar), "default", abstract(body, fvar))
+        return body
+
+    def lam(self, fvars: Sequence[FVar], body: Expr) -> Expr:
+        """
+        `fun (x1 : T1) ... (xn : Tn) => body`, binding the free variables `fvars = [x1, ..., xn]`.
+        """
+        for fvar in reversed(fvars):
+            body = Lambda(Anon(), self.type_of(fvar), "default", abstract(body, fvar))
+        return body
+
+    def is_proof(self, term: Expr) -> bool:
+        """
+        True iff `term` is a proof, i.e. its type is a proposition, i.e. its type has type `Prop`.
+        """
+        sort = self.whnf(self.infer_term(self.infer_term(term)))
+        return isinstance(sort, Sort) and is_zero(sort.level)
 
     def infer_term(self, term: Expr) -> Expr:
         match term:
@@ -289,37 +319,25 @@ class TypeChecker:
                 if not all_uparams_defined(uparam, self.declaring_info.level_params):
                     raise KernelError(f"universe parameter {uparam} not defined")
 
-        declaration_type = get_declaration_info(term).declaration_type
-
         # by induction on the env, this term has already been type checked to be of type `declaration_type`
         # the only thing left to do is to instantiate the universe parameters of the declaration using
         # the concrete universe levels provided in the const term
-        universe_parameters = get_universe_parameters(term)
-        if len(universe_parameters) != len(const.universes):
+        if len(term.info.level_params) != len(const.universes):
             raise KernelError(f"universe parameter count mismatch for {const.name}")
 
         return instantiate_universe_parameters(
-            declaration_type, universe_parameters, const.universes
+            term.info.declaration_type, term.info.level_params, const.universes
         )
 
     def infer_projection(self, proj: Projection) -> Expr:
         raise NotImplementedError
 
     def def_eq(self, t: Expr, s: Expr) -> bool:
-
-        # check definitional equality by proof irrelevance
-        type_t = self.infer_term(t)
-        type_s = self.infer_term(s)
-
-        # if the type of t is a Prop (i.e., t is a proof term), then
-        # by proof irrelevance, any proof for the same proposition is definitionally
-        # equal. Therefore, it suffices to check definitional equality of the types
-        # of t and s
-        type_type_t = self.whnf(self.infer_term(type_t))
-        if isinstance(type_type_t, Sort):
-            if normalizes_to_zero_level(type_type_t.level):
-                return self.def_eq(type_t, type_s)
-
+        # if t is a proof, then by proof irrelevance, any proof of the same proposition is
+        # definitionally equal to it. Therefore, it suffices to check definitional equality of
+        # the types of t and s
+        if self.is_proof(t):
+            return self.def_eq(self.infer_term(t), self.infer_term(s))
 
         # TODO: I wish it was this easy...
         return t == s
@@ -389,289 +407,3 @@ class TypeChecker:
             case _:
                 # everything else is already in whnf
                 return expr
-
-def normalizes_to_zero_level(level: Level) -> bool:
-    match level:
-        case Zero():
-            return True
-        case Succ():
-            return False
-        case Param():
-            return False
-        case Max(left, right):
-            return normalizes_to_zero_level(left) and normalizes_to_zero_level(right)
-        case IMax(left, right):
-            return normalizes_to_zero_level(right)        
-
-
-def instantiate(expr: Expr, arg: Expr, offset: int = 0) -> Expr:
-    """
-    Instantiate the bound variable at the current offset with the given argument `arg`.
-    By default offset is 0, so the bound variable immediately "above" is instantiated.
-    """
-    match expr:
-        case BVar(index):
-            return arg if index == offset else expr
-        case App(fn, arg_inner):
-            return App(
-                instantiate(fn, arg, offset), instantiate(arg_inner, arg, offset)
-            )
-        case Lambda(var, binder_type, binder_info, body):
-            return Lambda(
-                var,
-                instantiate(binder_type, arg, offset),
-                binder_info,
-                instantiate(body, arg, offset + 1),
-            )
-        case Forall(var, binder_type, binder_info, body):
-            return Forall(
-                var,
-                instantiate(binder_type, arg, offset),
-                binder_info,
-                instantiate(body, arg, offset + 1),
-            )
-        case Let(var, binder_type, value, body, nondep):
-            return Let(
-                var,
-                instantiate(binder_type, arg, offset),
-                instantiate(value, arg, offset),
-                instantiate(body, arg, offset + 1),
-                nondep,
-            )
-        case Projection(type_name=type_name, index=index, struct=struct):
-            return Projection(type_name, index, instantiate(struct, arg, offset))
-        case _:
-            return expr
-
-
-def abstract(expr: Expr, fvar: FVar, offset: int = 0) -> Expr:
-    """
-    Abstract the free variable `fvar` from the expression `expr` with the correct De Bruijn index.
-    """
-    match expr:
-        case FVar(name):
-            return BVar(offset) if name == fvar.name else expr
-        case App(fn, arg_inner):
-            return App(abstract(fn, fvar, offset), abstract(arg_inner, fvar, offset))
-        case Lambda(var, binder_type, binder_info, body):
-            return Lambda(
-                var,
-                abstract(binder_type, fvar, offset),
-                binder_info,
-                abstract(body, fvar, offset + 1),
-            )
-        case Forall(var, binder_type, binder_info, body):
-            return Forall(
-                var,
-                abstract(binder_type, fvar, offset),
-                binder_info,
-                abstract(body, fvar, offset + 1),
-            )
-        case Let(var, binder_type, value, body, nondep):
-            return Let(
-                var,
-                abstract(binder_type, fvar, offset),
-                abstract(value, fvar, offset),
-                abstract(body, fvar, offset + 1),
-                nondep,
-            )
-        case Projection(type_name=type_name, index=index, struct=struct):
-            return Projection(type_name, index, abstract(struct, fvar, offset))
-        case _:
-            return expr
-
-
-def instantiate_universe_parameters(
-    expr: Expr, parameters: tuple[Name, ...], universes: tuple[Level, ...]
-) -> Expr:
-    """
-    Instantiate universe parameters of a declaration type with the given concrete universe levels
-    """
-    match expr:
-        case Const(name=name, universes=input_universes):
-            output_universes = []
-            for universe in input_universes:
-                output_universes.append(
-                    instantiate_level_universe_parameters(
-                        universe, parameters, universes
-                    )
-                )
-            return Const(name, tuple(output_universes))
-        case Sort(level=level):
-            return Sort(
-                instantiate_level_universe_parameters(level, parameters, universes)
-            )
-        case App(fn=fn, arg=arg):
-            return App(
-                instantiate_universe_parameters(fn, parameters, universes),
-                instantiate_universe_parameters(arg, parameters, universes),
-            )
-        case Lambda(
-            var=var, binder_type=binder_type, binder_info=binder_info, body=body
-        ):
-            return Lambda(
-                var,
-                instantiate_universe_parameters(binder_type, parameters, universes),
-                binder_info,
-                instantiate_universe_parameters(body, parameters, universes),
-            )
-        case Forall(
-            var=var, binder_type=binder_type, binder_info=binder_info, body=body
-        ):
-            return Forall(
-                var,
-                instantiate_universe_parameters(binder_type, parameters, universes),
-                binder_info,
-                instantiate_universe_parameters(body, parameters, universes),
-            )
-        case Let(
-            var=var, binder_type=binder_type, value=value, body=body, nondep=nondep
-        ):
-            return Let(
-                var,
-                instantiate_universe_parameters(binder_type, parameters, universes),
-                instantiate_universe_parameters(value, parameters, universes),
-                instantiate_universe_parameters(body, parameters, universes),
-                nondep,
-            )
-        case Projection(type_name=type_name, index=index, struct=struct):
-            return Projection(
-                type_name,
-                index,
-                instantiate_universe_parameters(struct, parameters, universes),
-            )
-        case _:
-            return expr
-
-
-def instantiate_level_universe_parameters(
-    level: Level, parameters: tuple[Name, ...], universes: tuple[Level, ...]
-) -> Level:
-    match level:
-        case Zero():
-            return Zero()
-        case Succ(pred=pred):
-            return Succ(
-                instantiate_level_universe_parameters(pred, parameters, universes)
-            )
-        case Param(name=name):
-            for param, universe in zip(parameters, universes):
-                if name == param:
-                    return universe
-            return Param(name)
-        case Max(left=left, right=right):
-            return Max(
-                instantiate_level_universe_parameters(left, parameters, universes),
-                instantiate_level_universe_parameters(right, parameters, universes),
-            )
-        case IMax(left=left, right=right):
-            return IMax(
-                instantiate_level_universe_parameters(left, parameters, universes),
-                instantiate_level_universe_parameters(right, parameters, universes),
-            )
-
-
-def get_universe_parameters(declaration: ConstantInfo) -> tuple[Name, ...]:
-    return get_declaration_info(declaration).level_params
-
-
-def get_declaration_info(declaration: ConstantInfo) -> DeclarationInfo:
-    match declaration:
-        case Definition(declaration_info):
-            return declaration_info
-        case Axiom(declaration_info):
-            return declaration_info
-        case Theorem(declaration_info):
-            return declaration_info
-        case Opaque(declaration_info):
-            return declaration_info
-        case Quot(declaration_info):
-            return declaration_info
-        case Inductive(declaration_info):
-            return declaration_info
-        case _:
-            raise KernelError(
-                f"trying to retrieve declaration info for declaration {declaration}"
-            )
-
-
-def num_loose_bound_variables(expr: Expr) -> int:
-    # compute the number of loose bound variables in the expression. This is the number of
-    # variables that are not bound internally by the expression itself.
-    match expr:
-        case BVar(index):
-            return index + 1
-        case App(fn, arg):
-            return max(
-                num_loose_bound_variables(fn),
-                max(num_loose_bound_variables(arg) - 1, 0),
-            )
-        case Lambda(binder_type=binder_type, body=body):
-            return max(
-                num_loose_bound_variables(binder_type),
-                max(num_loose_bound_variables(body) - 1, 0),
-            )
-        case Forall(binder_type=binder_type, body=body):
-            return max(
-                num_loose_bound_variables(binder_type),
-                max(num_loose_bound_variables(body) - 1, 0),
-            )
-        case Let(binder_type=binder_type, value=value, body=body):
-            return max(
-                num_loose_bound_variables(binder_type),
-                num_loose_bound_variables(value),
-                max(num_loose_bound_variables(body) - 1, 0),
-            )
-        case Projection(struct=struct):
-            return num_loose_bound_variables(struct)
-        case _:
-            return 0
-
-
-def ensure_parameters_unique(parameters: tuple[Name, ...]) -> None:
-    seen_names = set()
-    for name in parameters:
-        if name in seen_names:
-            raise KernelError(f"duplicate level parameter: {name}")
-        seen_names.add(name)
-
-
-def has_free_variables(expr: Expr) -> bool:
-    match expr:
-        case FVar():
-            return True
-        case App(fn=fn, arg=arg):
-            return has_free_variables(fn) or has_free_variables(arg)
-        case Lambda(binder_type=binder_type, body=body):
-            return has_free_variables(binder_type) or has_free_variables(body)
-        case Forall(binder_type=binder_type, body=body):
-            return has_free_variables(binder_type) or has_free_variables(body)
-        case Let(binder_type=binder_type, value=value, body=body):
-            return (
-                has_free_variables(binder_type)
-                or has_free_variables(value)
-                or has_free_variables(body)
-            )
-        case Projection(struct=struct):
-            return has_free_variables(struct)
-        case _:
-            return False
-
-
-def all_uparams_defined(level: Level, parameters: tuple[Name, ...]) -> bool:
-    # return true if all universe parameters referenced in level are in parameters
-    match level:
-        case Zero():
-            return True
-        case Succ(pred):
-            return all_uparams_defined(pred, parameters)
-        case Max(left, right):
-            return all_uparams_defined(left, parameters) and all_uparams_defined(
-                right, parameters
-            )
-        case IMax(left, right):
-            return all_uparams_defined(left, parameters) and all_uparams_defined(
-                right, parameters
-            )
-        case Param(name):
-            return name in parameters
