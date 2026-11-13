@@ -1,3 +1,5 @@
+from ast import Not
+
 from loguru import logger
 
 from yalk.parser import ExportedDefinitions
@@ -22,12 +24,14 @@ from yalk.types import (
     Level,
     Max,
     Name,
+    NatLiteral,
     Opaque,
     Param,
     Projection,
     Quot,
     Recursor,
     Sort,
+    StringLiteral,
     Succ,
     Theorem,
     Zero,
@@ -94,11 +98,12 @@ class TypeChecker:
     ) -> None:
         self.env = env
         self.declaring_info: DeclarationInfo | None = None
-        self.free_variables: dict[FVar, Expr] = {}
+        self.free_variables: dict[str, Expr] = {}
 
     def new_free_variable(self, fvar_type: Expr) -> FVar:
-        fvar = FVar(name=f"fvar_{len(self.free_variables)}")
-        self.free_variables[fvar] = fvar_type
+        name = f"fvar_{len(self.free_variables)}"
+        fvar = FVar(name=name)
+        self.free_variables[name] = fvar_type
         return fvar
 
     def infer_term(self, term: Expr) -> Expr:
@@ -109,6 +114,8 @@ class TypeChecker:
                 if name not in self.free_variables:
                     raise KernelError(f"free variable not found: {name}")
                 return self.free_variables[name]
+            case Const():
+                return self.infer_const(term)
             case Sort():
                 return self.infer_sort(term)
             case App():
@@ -119,7 +126,12 @@ class TypeChecker:
                 return self.infer_pi(term)
             case Let():
                 return self.infer_let(term)
-        return Sort(Zero())
+            case Projection():
+                return self.infer_projection(term)
+            case NatLiteral() | StringLiteral():
+                raise NotImplementedError
+            case _:
+                raise NotImplementedError
 
     def infer_sort(self, sort: Sort) -> Expr:
         # all the universe parameters referenced in the sort must be defined
@@ -143,7 +155,7 @@ class TypeChecker:
         arg_type = self.infer_term(app.arg)
 
         # the binder type must match the argument type
-        if not def_eq(fun_type.binder_type, arg_type):
+        if not self.def_eq(fun_type.binder_type, arg_type):
             raise KernelError(f"expected {fun_type.binder_type}, got {arg_type}")
 
         # the type of the application is the return value of the pi,
@@ -196,7 +208,7 @@ class TypeChecker:
 
         # the type of the value must be equal to the binder type
         value_type = self.infer_term(let.value)
-        if not def_eq(let.binder_type, value_type):
+        if not self.def_eq(let.binder_type, value_type):
             raise KernelError(
                 f"binder type {let.binder_type} does not match value type {value_type}"
             )
@@ -233,15 +245,47 @@ class TypeChecker:
             declaration_type, universe_parameters, const.universes
         )
 
+    def infer_projection(self, proj: Projection) -> Expr:
+        raise NotImplementedError
 
-def def_eq(expr1: Expr, expr2: Expr) -> bool:
-    # TODO: I wish it was this easy...
-    return expr1 == expr2
+    def def_eq(self, t: Expr, s: Expr) -> bool:
+
+        # check definitional equality by proof irrelevance
+        type_t = self.infer_term(t)
+        type_s = self.infer_term(s)
+
+        # if the type of t is a Prop (i.e., t is a proof term), then
+        # by proof irrelevance, any proof for the same proposition is definitionally
+        # equal. Therefore, it suffices to check definitional equality of the types
+        # of t and s
+        type_type_t = whnf(self.infer_term(type_t))
+        if isinstance(type_type_t, Sort):
+            if normalizes_to_zero_level(type_type_t.level):
+                return self.def_eq(type_t, type_s)
+
+
+        # TODO: I wish it was this easy...
+        return t == s
+
+
 
 
 def whnf(expr: Expr) -> Expr:
     # TODO
     return expr
+
+def normalizes_to_zero_level(level: Level) -> bool:
+    match level:
+        case Zero():
+            return True
+        case Succ():
+            return False
+        case Param():
+            return False
+        case Max(left, right):
+            return normalizes_to_zero_level(left) and normalizes_to_zero_level(right)
+        case IMax(left, right):
+            return normalizes_to_zero_level(right)        
 
 
 def instantiate(expr: Expr, arg: Expr, offset: int = 0) -> Expr:
@@ -289,8 +333,8 @@ def abstract(expr: Expr, fvar: FVar, offset: int = 0) -> Expr:
     Abstract the free variable `fvar` from the expression `expr` with the correct De Bruijn index.
     """
     match expr:
-        case FVar(index):
-            return BVar(offset) if index == offset else expr
+        case FVar(name):
+            return BVar(offset) if name == fvar.name else expr
         case App(fn, arg_inner):
             return App(abstract(fn, fvar, offset), abstract(arg_inner, fvar, offset))
         case Lambda(var, binder_type, binder_info, body):
