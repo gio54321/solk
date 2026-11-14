@@ -5,6 +5,7 @@ Exit codes, as expected by the Lean Kernel Arena:
     0: all declarations are accepted
     1: some declaration is rejected
     2: declined, the file uses a feature this kernel does not support
+    4: solk crashed (e.g. out of memory), which says nothing about the file
 
 With `--skip-unsupported`, the unsupported declarations are skipped instead, together with all
 the declarations that depend on them, and the others are still checked. This is useful to test
@@ -13,6 +14,7 @@ the kernel on real-world files, which often contain a few nested inductive types
 
 import sys
 import threading
+import traceback
 
 from solk import parser
 from solk.environment import Environment
@@ -90,4 +92,9 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        # Python exits with 1 on an uncaught exception, which would mean "rejected"
+        traceback.print_exc()
+        sys.exit(4)
