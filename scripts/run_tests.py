@@ -11,11 +11,12 @@ tests (see `scripts/export_tests.py`)
 and the arena tests, once built in a checkout of the arena with e.g.
 `uv run lka.py build-test 'tutorial'`:
 
-    python3 scripts/run_tests.py <arena>/_build/tests [glob] [--timeout SECONDS]
+    python3 scripts/run_tests.py <arena>/_build/tests [glob] [--timeout SECONDS] [--memory GB]
 """
 
 import argparse
 import json
+import resource
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -25,16 +26,19 @@ MAIN = Path(__file__).resolve().parent.parent / "main.py"
 STATUS = {0: "accepted", 1: "rejected", 2: "declined"}
 
 
-def run(test: Path, timeout: float, skip_unsupported: bool) -> tuple[str, str]:
+def run(test: Path, timeout: float, memory: float, skip_unsupported: bool) -> tuple[str, str]:
     """
-    The status of solk on `test`, and the last line it printed.
+    The status of solk on `test`, and the last line it printed. solk may use at most `memory`
+    gigabytes, after which it crashes with a `MemoryError`.
     """
+    limit = int(memory * 1024**3)
     try:
         proc = subprocess.run(
             [sys.executable, str(MAIN), *(["--skip-unsupported"] if skip_unsupported else []), str(test)],
             capture_output=True,
             text=True,
             timeout=timeout,
+            preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_AS, (limit, limit)),
         )
     except subprocess.TimeoutExpired:
         return "timeout", ""
@@ -62,13 +66,14 @@ def main() -> None:
     args.add_argument("dir", type=Path)
     args.add_argument("glob", nargs="?", default="**/*.ndjson")
     args.add_argument("--timeout", type=float, default=60)
-    args.add_argument("--jobs", type=int, default=8)
+    args.add_argument("--memory", type=float, default=4, help="gigabytes per test")
+    args.add_argument("--jobs", type=int, default=4)
     args.add_argument("--skip-unsupported", action="store_true", help="passed on to solk")
     opts = args.parse_args()
 
     tests = sorted(t for t in opts.dir.glob(opts.glob) if "work" not in t.parts)
     with ThreadPoolExecutor(opts.jobs) as pool:
-        results = list(pool.map(lambda t: run(t, opts.timeout, opts.skip_unsupported), tests))
+        results = list(pool.map(lambda t: run(t, opts.timeout, opts.memory, opts.skip_unsupported), tests))
 
     counts: dict[str, int] = {}
     for test, (status, message) in zip(tests, results):
