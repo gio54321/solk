@@ -596,7 +596,10 @@ class TypeChecker:
         unfolding definitions one at a time.
         """
         expr = self.whnf_core(expr)
-        value = self.reduce_nat(expr)
+        # with free variables the arguments rarely reduce to literals, and trying is costly:
+        # e.g. in `Nat.div (Nat.div x 2) 2`, each `Nat.div` would reduce its argument to find
+        # it is not a literal, then again after unfolding, exponentially in the nesting
+        value = None if has_free_variables(expr) else self.reduce_nat(expr)
         if value is not None:
             return value
         unfolded = self.unfold_definition(expr)
