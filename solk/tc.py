@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import itertools
 import math
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
@@ -86,22 +87,22 @@ def major_inductive(rec: Recursor) -> Name:
     return rec.info.name.pre
 
 
+# Free variables get unique names from this counter.
+FVAR_COUNTER = itertools.count()
+
+
 class TypeChecker:
     def __init__(
         self, env: Environment, declaring_info: DeclarationInfo | None = None
     ) -> None:
         self.env = env
         self.declaring_info = declaring_info
-        self.free_variables: dict[str, Expr] = {}
 
     def new_free_variable(self, fvar_type: Expr) -> FVar:
-        name = f"fvar_{len(self.free_variables)}"
-        fvar = FVar(name=name)
-        self.free_variables[name] = fvar_type
-        return fvar
+        return FVar(f"fvar_{next(FVAR_COUNTER)}", fvar_type)
 
     def type_of(self, fvar: FVar) -> Expr:
-        return self.free_variables[fvar.name]
+        return fvar.type
 
     def pi(self, fvars: Sequence[FVar], body: Expr) -> Expr:
         """
@@ -136,10 +137,8 @@ class TypeChecker:
         match term:
             case BVar(_index):
                 raise KernelError(f"bound variable not allowed in inference: {_index}")
-            case FVar(name):
-                if name not in self.free_variables:
-                    raise KernelError(f"free variable not found: {name}")
-                return self.free_variables[name]
+            case FVar():
+                return term.type
             case Const():
                 return self.infer_const(term)
             case Sort():

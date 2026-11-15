@@ -1,6 +1,6 @@
 from __future__ import annotations
 from typing import Any, Dict, Literal
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 @dataclass(frozen=True)
 class Meta:
@@ -85,10 +85,11 @@ class BVar:
 @dataclass(frozen=True)
 class FVar:
     """
-    Free variable, must be unique in the context of a single expression.
-    Never produced by the exporter; used by the type checker.
+    Free variable, identified by its unique name. It carries its type, which is not part of its
+    identity. Never produced by the exporter; used by the type checker.
     """
     name: str
+    type: Expr = field(compare=False, repr=False)
 
 @dataclass(frozen=True)
 class Const:
