@@ -124,16 +124,23 @@ class TypeChecker:
         """
         True iff `type_` is a proposition, i.e. it has type `Prop`.
         """
-        sort = self.whnf(self.infer_term(type_))
+        sort = self.whnf(self.infer_term(type_, infer_only=True))
         return isinstance(sort, Sort) and is_zero(sort.level)
 
     def is_proof(self, term: Expr) -> bool:
         """
         True iff `term` is a proof, i.e. its type is a proposition.
         """
-        return self.is_prop(self.infer_term(term))
+        return self.is_prop(self.infer_term(term, infer_only=True))
 
-    def infer_term(self, term: Expr) -> Expr:
+    def infer_term(self, term: Expr, infer_only: bool = False) -> Expr:
+        """
+        The type of `term`, checking that `term` is well-typed. With `infer_only`, `term` must be
+        already known to be well-typed (e.g. it is part of, or a reduct of, a checked term), and
+        then its type is computed without checking it again, like the official kernel does.
+        Otherwise the checker would check the same terms over and over: e.g. the type of `x.2.2`
+        mentions `x.2.1`, whose type mentions `x.1`, and so on.
+        """
         match term:
             case BVar(_index):
                 raise KernelError(f"bound variable not allowed in inference: {_index}")
@@ -144,21 +151,21 @@ class TypeChecker:
             case Sort():
                 return self.infer_sort(term)
             case App():
-                return self.infer_app(term)
+                return self.infer_app(term, infer_only)
             case Lambda():
-                return self.infer_lambda(term)
+                return self.infer_lambda(term, infer_only)
             case Forall():
-                return self.infer_pi(term)
+                return self.infer_pi(term, infer_only)
             case Let():
-                return self.infer_let(term)
+                return self.infer_let(term, infer_only)
             case Projection():
-                return self.infer_projection(term)
+                return self.infer_projection(term, infer_only)
             case NatLiteral():
                 return NAT
             case StringLiteral():
                 return STRING
             case MData(inner, _):
-                return self.infer_term(inner)
+                return self.infer_term(inner, infer_only)
 
     def infer_sort(self, sort: Sort) -> Expr:
         # all the universe parameters referenced in the sort must be defined
@@ -172,11 +179,13 @@ class TypeChecker:
         # the type of Sort n is Sort (succ n)
         return Sort(Succ(sort.level))
 
-    def infer_app(self, app: App) -> Expr:
+    def infer_app(self, app: App, infer_only: bool) -> Expr:
         # get the type of the function, it must be pi
-        fun_type = self.whnf(self.infer_term(app.fn))
+        fun_type = self.whnf(self.infer_term(app.fn, infer_only))
         if not isinstance(fun_type, Forall):
             raise KernelError(f"expected a forall type, got {fun_type}")
+        if infer_only:
+            return instantiate(fun_type.body, app.arg)
 
         # get the type of the argument
         arg_type = self.infer_term(app.arg)
@@ -189,16 +198,17 @@ class TypeChecker:
         # instantiated with the argument value
         return instantiate(fun_type.body, app.arg)
 
-    def infer_lambda(self, lam: Lambda) -> Expr:
+    def infer_lambda(self, lam: Lambda, infer_only: bool) -> Expr:
         # the type of the binder type must be a sort
-        binder_type_type = self.whnf(self.infer_term(lam.binder_type))
-        if not isinstance(binder_type_type, Sort):
-            raise KernelError(f"expected a sort, got {binder_type_type}")
+        if not infer_only:
+            binder_type_type = self.whnf(self.infer_term(lam.binder_type))
+            if not isinstance(binder_type_type, Sort):
+                raise KernelError(f"expected a sort, got {binder_type_type}")
 
         # replce the binder with a fresh free variable and infer the body type
         fvar = self.new_free_variable(lam.binder_type)
         body = instantiate(lam.body, fvar)
-        body_type = self.infer_term(body)
+        body_type = self.infer_term(body, infer_only)
 
         # at this point, the body type is inferred, but it could contain occurrences of the
         # newly created free variable, because the body type could be dependent on the binder value.
@@ -209,16 +219,16 @@ class TypeChecker:
         # the type of the lambda is a pi, with the binder type as the domain and the body as the codomain
         return Forall(lam.var, lam.binder_type, lam.binder_info, body_type_abstracted)
 
-    def infer_pi(self, pi: Forall) -> Expr:
+    def infer_pi(self, pi: Forall, infer_only: bool) -> Expr:
         # the type of the binder type must be a sort
-        binder_type_type = self.whnf(self.infer_term(pi.binder_type))
+        binder_type_type = self.whnf(self.infer_term(pi.binder_type, infer_only))
         if not isinstance(binder_type_type, Sort):
             raise KernelError(f"expected a sort, got {binder_type_type}")
 
         # replce the binder with a fresh free variable and infer the body type
         fvar = self.new_free_variable(pi.binder_type)
         body = instantiate(pi.body, fvar)
-        body_type = self.whnf(self.infer_term(body))
+        body_type = self.whnf(self.infer_term(body, infer_only))
 
         # we are in a pi, so the body type must also be a sort
         if not isinstance(body_type, Sort):
@@ -227,23 +237,24 @@ class TypeChecker:
         # the type of a pi is the sort IMax(binder sort level, body sort level)
         return Sort(IMax(binder_type_type.level, body_type.level))
 
-    def infer_let(self, let: Let) -> Expr:
-        # the type of the binder type must be a sort
-        binder_type_type = self.whnf(self.infer_term(let.binder_type))
-        if not isinstance(binder_type_type, Sort):
-            raise KernelError(f"expected a sort, got {binder_type_type}")
+    def infer_let(self, let: Let, infer_only: bool) -> Expr:
+        if not infer_only:
+            # the type of the binder type must be a sort
+            binder_type_type = self.whnf(self.infer_term(let.binder_type))
+            if not isinstance(binder_type_type, Sort):
+                raise KernelError(f"expected a sort, got {binder_type_type}")
 
-        # the type of the value must be equal to the binder type
-        value_type = self.infer_term(let.value)
-        if not self.def_eq(let.binder_type, value_type):
-            raise KernelError(
-                f"binder type {let.binder_type} does not match value type {value_type}"
-            )
+            # the type of the value must be equal to the binder type
+            value_type = self.infer_term(let.value)
+            if not self.def_eq(let.binder_type, value_type):
+                raise KernelError(
+                    f"binder type {let.binder_type} does not match value type {value_type}"
+                )
 
         # the type of a let x: A = val in body is
         # the type of the body with x replaced by val
         body = instantiate(let.body, let.value)
-        return self.infer_term(body)
+        return self.infer_term(body, infer_only)
 
     def infer_const(self, const: Const) -> Expr:
         # find the term in the environment
@@ -269,13 +280,13 @@ class TypeChecker:
             term.info.declaration_type, term.info.level_params, const.universes
         )
 
-    def infer_projection(self, proj: Projection) -> Expr:
+    def infer_projection(self, proj: Projection, infer_only: bool) -> Expr:
         """
         If `struct : S params`, the type of `struct.i` is the type of the `i`-th field of
         `S.mk params : (fields) → S params`, where the previous fields are replaced by their
         projections out of `struct`.
         """
-        struct_type = self.whnf(self.infer_term(proj.struct))
+        struct_type = self.whnf(self.infer_term(proj.struct, infer_only))
         struct = get_head(struct_type)
         decl = self.env.constants.get(proj.type_name)
         if (
@@ -290,7 +301,7 @@ class TypeChecker:
         # the type of `S.mk params`: replace `S` with `S.mk` in `S params indices`, without indices
         ctor = Const(decl.constructor_names[0], struct.universes)
         ctor_app = replace_fn(get_fn(struct_type, decl.num_indices), decl.num_params, ctor)
-        type_ = self.infer_term(ctor_app)
+        type_ = self.infer_term(ctor_app, infer_only=True)
 
         # a proof contains no data: only proofs can be projected out of a proof, and the type
         # of a field cannot depend on a data field (it would expose that data)
@@ -331,7 +342,8 @@ class TypeChecker:
         # definitionally equal to it. Therefore, it suffices to check definitional equality of
         # the types of t and s
         if self.is_proof(t):
-            return self.def_eq(self.infer_term(t), self.infer_term(s))
+            t_type = self.infer_term(t, infer_only=True)
+            return self.def_eq(t_type, self.infer_term(s, infer_only=True))
 
         return self.def_eq_lazy(t, s)
 
@@ -478,7 +490,7 @@ class TypeChecker:
         """
         if not isinstance(t, Lambda) or isinstance(s, Lambda):
             return False
-        s_type = self.whnf(self.infer_term(s))
+        s_type = self.whnf(self.infer_term(s, infer_only=True))
         if not isinstance(s_type, Forall):
             return False
         # `s` has no loose bound variables, so `BVar(0)` refers to the new binder
@@ -509,8 +521,8 @@ class TypeChecker:
             return False
 
         # the projections of `t` only make sense if `t` is also of type `S params`
-        s_type = self.infer_term(s)
-        if not self.def_eq(self.infer_term(t), s_type):
+        s_type = self.infer_term(s, infer_only=True)
+        if not self.def_eq(self.infer_term(t, infer_only=True), s_type):
             return False
 
         # if `S.mk` is partially applied, `s` and `t` are functions: apply both to fresh free
@@ -533,8 +545,8 @@ class TypeChecker:
         """
         A unit-like type has exactly one value, so any two terms of that type are equal.
         """
-        t_type = self.whnf(self.infer_term(t))
-        return self.is_unit_like(t_type) and self.def_eq(t_type, self.infer_term(s))
+        t_type = self.whnf(self.infer_term(t, infer_only=True))
+        return self.is_unit_like(t_type) and self.def_eq(t_type, self.infer_term(s, infer_only=True))
 
     def is_unit_like(self, type_: Expr) -> bool:
         """
@@ -555,7 +567,8 @@ class TypeChecker:
         inductive = self.env.get(struct.name)
         assert isinstance(inductive, Inductive)
         ctor = Const(inductive.constructor_names[0], struct.universes)
-        ctor_type = self.whnf(self.infer_term(replace_fn(type_, get_num_args(type_), ctor)))
+        ctor_app = replace_fn(type_, get_num_args(type_), ctor)
+        ctor_type = self.whnf(self.infer_term(ctor_app, infer_only=True))
         while isinstance(ctor_type, Forall):
             field_type = ctor_type.binder_type
             if not self.is_prop(field_type) and not self.is_unit_like(field_type):
@@ -754,7 +767,7 @@ class TypeChecker:
         `c params` has the same type. E.g. any `h : Eq a a` is `Eq.refl a`, so `Eq.rec` reduces
         on `h` even if `h` is not a constructor application, e.g. a variable.
         """
-        major_type = self.whnf(self.infer_term(major))
+        major_type = self.whnf(self.infer_term(major, infer_only=True))
         inductive = get_head(major_type)
         if not isinstance(inductive, Const) or inductive.name != major_inductive(rec):
             return major
@@ -765,7 +778,7 @@ class TypeChecker:
         ctor = Const(decl.constructor_names[0], inductive.universes)
         ctor_app = replace_fn(get_fn(major_type, decl.num_indices), decl.num_params, ctor)
         # `h : Eq a b` is not `Eq.refl a`, unless `a` and `b` are equal
-        if not self.def_eq(major_type, self.infer_term(ctor_app)):
+        if not self.def_eq(major_type, self.infer_term(ctor_app, infer_only=True)):
             return major
         return ctor_app
 
@@ -780,7 +793,7 @@ class TypeChecker:
             isinstance(head, Const) and isinstance(self.env.constants.get(head.name), Constructor)
         ):
             return major
-        major_type = self.whnf(self.infer_term(major))
+        major_type = self.whnf(self.infer_term(major, infer_only=True))
         struct = get_head(major_type)
         if not isinstance(struct, Const) or struct.name != name:
             return major
